@@ -1,0 +1,223 @@
+<?php
+
+header('X-Frame-Options: DENY'); // Clickjacking prevention (supported by IE8+, FF3.6.9+, Opera10.5+, Safari4+, Chrome 4.1.249.1042+)
+
+require "../0.9/apiHeader";
+
+$username = getArgument("username");
+$password = getArgument("password");
+
+$cookies = "";
+
+function ldsAPICall( $url, $fields = "" )
+{
+    global $cookies;
+    global $log;
+
+    $ch = curl_init();
+    curl_setopt($ch, CURLOPT_URL, $url );
+    curl_setopt($ch, CURLOPT_USERAGENT, 'HomeTeaching/0.9');
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
+    curl_setopt($ch, CURLOPT_TIMEOUT, 300);
+
+    if( !empty($cookies) )
+    {
+//        $log->logInfo($cookies);
+        curl_setopt($ch, CURLOPT_COOKIE, $cookies);
+    }
+    else
+    {
+        curl_setopt($ch, CURLOPT_HEADER, 1);
+        curl_setopt($ch, CURLOPT_POST, 1);
+        curl_setopt($ch, CURLOPT_POSTFIELDS, $fields);
+    }
+
+    $call = array();
+    
+    $call['result'] = curl_exec($ch);
+    $call['info']   = curl_getinfo($ch);
+
+    if( empty($cookies) )
+    {
+        preg_match_all('|Set-Cookie: (.*);|U', $call['result'], $results);
+        $cookies = implode(';', $results[1]);
+    }
+
+    curl_close($ch);
+
+    return $call;
+}
+
+function returnAccessToken( $ID )
+{
+    global $dbhost;
+    global $dbuser;
+    global $dbpassword;
+
+    global $log;
+
+    $params = array();
+    $params['redirect_uri']  = '(none)';
+    $params['response_type'] = 'token';
+    $params['scope']         = '';
+
+    $params['client_id'] = "bd684252b7cccdb243177fa1e19a5d7857730ed5"; // iOS App
+
+    $oauth = new OAuth2(new OAuth2StoragePDO(new PDO('mysql:dbname=' . "ht_app" . ';host=' . $dbhost, $dbuser, $dbpassword)));
+    list($redirect_uri, $result) = $oauth->getAuthResult(TRUE, $ID, $params );
+
+    $_POST['access_token'] = $result['fragment']['access_token'];
+
+    try
+    {
+        $token = $oauth->getBearerToken();                 $log->logInfo(print_r($token, TRUE));
+        $access_token = $oauth->verifyAccessToken($token); $log->logInfo(print_r($access_token, TRUE));
+
+        httpResult(200, "Successfully authenticated iOS App", $access_token);
+    }
+    catch( OAuth2ServerException $oauthError )
+    {
+        $oauthError->sendHttpResponse();
+    }
+}
+
+if( !empty($username) && !empty($password) )
+{
+    if( $mysqli = mysqliConnect() )
+    {
+        if( $existsResults = $mysqli->query("SELECT * FROM people WHERE lds_username='" . $mysqli->real_escape_string($username) . "'") )
+        {
+            if( $existsResults->num_rows > 0 )
+            {
+//                $log->logInfo($username . " - " .  $password);
+
+                if( $correctResult = $mysqli->query("SELECT * FROM people WHERE lds_username='" . $mysqli->real_escape_string($username) . "' AND lds_password='" . $mysqli->real_escape_string($password) . "'") )
+                {
+                    if( $correctResult->num_rows > 0 )
+                    {
+                        $person = $correctResult->fetch_assoc();
+
+                        returnAccessToken( $person['ID'] );
+                    }
+                    else
+                    {
+                        httpResult(400, "Incorrect password for $username", "Incorrect password");
+                    }
+                }
+                else{ httpResult(500, "Could not check password" ); }
+            }
+            else
+            {
+                $call = ldsAPICall( "https://signin.lds.org/login.html", "username=" . $username . "&password=" . $password );
+//                $log->logInfo( print_r($call, true) );
+
+                switch( $call['info']['http_code'] )
+                {
+                    case 200:
+                    {
+                        $call = ldsAPICall("https://www.lds.org/mobiledirectory/services/v2/ldstools/current-user-detail");
+//                        $log->logInfo( print_r($call, true) );
+
+                        switch( $call['info']['http_code'] )
+                        {
+                            case 200:
+                            {
+                                $details = json_decode($call['result'], true);
+
+                                $call = ldsAPICall("https://www.lds.org/mobiledirectory/services/ludrs/1.1/mem/mobile/member-detaillist/" . $details['homeUnitNbr']);
+//                                $log->logInfo( print_r($call, true) );
+
+                                switch( $call['info']['http_code'] )
+                                {
+                                    case 200:
+                                    {
+                                        $name = "";
+
+                                        $members = json_decode($call['result'], true);
+
+                                        for( $m = 0; $m < count($members); $m++ )
+                                        {
+                                            $household = $members[$m];
+
+                                            if( !empty($household['headOfHouse']) )
+                                            {
+                                                if( $household['headOfHouse']['individualId'] ==  $details['individualId'] )
+                                                {
+                                                    $name = $household['headOfHouse']['preferredName'];
+                                                    break;
+                                                }
+                                            }
+
+                                            if( !empty($household['spouse']) )
+                                            {
+                                                if( $household['spouse']['individualId'] ==  $details['individualId'] )
+                                                {
+                                                    $name = $household['spouse']['preferredName'];
+                                                    break;
+                                                }
+                                            }
+
+                                            if( !empty($household['children']) )
+                                            {
+                                                for( $c = 0; $c < count($household['children']); $c++ )
+                                                {
+                                                    $child = $household['children'][$c];
+
+                                                    if( $child['individualId'] ==  $details['individualId'] )
+                                                    {
+                                                        $name = $child['preferredName'];
+                                                        break;
+                                                    }
+                                                }
+
+                                                if( $name != "" ){ break; }
+                                            }
+                                        }
+
+//                                        $log->logInfo($name);
+
+                                        if( $mysqli->query("INSERT INTO people (ID, name, lds_username, lds_password) VALUES('" . $mysqli->real_escape_string($details['individualId']) . "', '" . $mysqli->real_escape_string($name) . "', '" . $mysqli->real_escape_string($username) . "', '" . $mysqli->real_escape_string($password) . "')") )
+                                        {
+                                            returnAccessToken( $details['individualId'] );
+                                        }
+                                        else{ httpResult(500, "Could not insert/update $username account" ); }
+
+                                    } break;
+
+                                    default:
+                                    {
+
+                                    }
+                                }
+                            } break;
+
+                            default:
+                            {
+                                httpResult(500, "Couldn't get the current user detail");
+                            }
+                        }
+                    } break;
+
+                    case 302:
+                    {
+                        httpResult(400, "Incorrect LDS password");
+                    } break;
+
+                    default:
+                    {
+                        httpResult(500, "Login error");
+                    }
+                }
+            }
+        }
+        else{ httpResult(500, "Could not get existing lds_username" ); }
+
+        sessionClose();
+    }
+    else{ httpResult(500, "Unable to select database ht_app" ); }
+}
+else{ httpResult(400, "One of the parameters was empty (username: $username, person: $person)"); }
+
+exit;
+
+?>

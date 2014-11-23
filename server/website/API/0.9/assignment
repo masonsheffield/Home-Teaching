@@ -1,0 +1,21 @@
+<?php
+
+    require 'apiHeader';
+
+    if( $account = sessionAuthenticate() )
+    {
+        if( $assignmentResult = $mysqli->query("SELECT P.ID, P.name FROM assignments AS A INNER JOIN people AS P ON A.teachee_ID=P.ID WHERE teacher_ID='" . $mysqli->real_escape_string($account['ID']) . "'") )
+        {
+            $assignments = array();
+
+            while( $assignment = $assignmentResult->fetch_assoc() ){ push_array( $assignments, $assignment ); }
+
+            httpResult(200, "Looked up assignment for " . $account['ID'], $assignments);
+        }
+        else{ httpResult(500, "Unable to look up assignments: " . $mysqli->error); }
+
+        sessionClose();
+    }
+
+    exit;
+?>

@@ -1,0 +1,21 @@
+<?php
+
+    require 'apiHeader';
+
+    if( sessionAuthenticate() )
+    {
+        if( $visitResult = $mysqli->query("SELECT visitee_ID, time FROM visits WHERE visitor_ID='" . $mysqli->real_escape_string($account['ID']) . "'") )
+        {
+            $visits = array();
+
+            while( $visit = $visitResult->fetch_assoc() ){ push_array( $visits, $visit ); }
+
+            httpResult(200, "Looked up visits for " . $account['ID'], $visits);
+        }
+        else{ httpResult(500, "Unable to look up companionship: " . $mysqli->error); }
+
+        sessionClose();
+    }
+
+    exit;
+?>

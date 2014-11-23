@@ -1,0 +1,400 @@
+<?php
+
+    $startTime = microtime(true);
+
+    set_time_limit(0);
+    ignore_user_abort(true);
+
+    $homeDirectory = '/home/htappadmin/';
+    $projectDirectory = $homeDirectory . 'htapp.ldseo.com/Home-Teaching';
+
+    include $homeDirectory . 'htcredentials';
+
+    require $projectDirectory . '/server/libraries/oauth2/OAuth2StoragePdo.php';
+    require $projectDirectory . '/server/libraries/KLogger.php';
+    require $projectDirectory . '/server/defines/authLevels.php';
+
+    $log = new KLogger( $loggingPath , KLogger::DEBUG );
+
+    global $mysqli;
+
+    function sessionClose()
+    {
+        global $mysqli;
+
+        if( $mysqli ){ $mysqli->close(); }
+    }
+
+    function mysqliReconnect()
+    {
+        global $mysqli;
+
+        $mysqli->close();
+        return mysqliConnect();
+    }
+
+    function mysqliConnect()
+    {
+        global $dbhost;
+        global $dbname;
+        global $dbuser;
+        global $dbpassword;
+//        global $log;
+
+        $mysqli = new mysqli( $dbhost, $dbuser, $dbpassword, $dbname );
+        
+        if( $mysqli->connect_errno )
+        {
+            httpResult(500, "Unable to connect to MySQL: " . $mysqli->connect_error);
+            exit;
+        }
+
+        $mysqli->set_charset('utf8');
+
+        return $mysqli;
+    }
+
+    function progressTime( $comment = "" )
+    {
+        global $log;
+        global $startTime;
+
+        $executionTime = round(microtime(true) - $startTime, 5);
+
+        $command = $_SERVER['SCRIPT_NAME'];
+
+        $log->logInfo("$executionTime - $command - $comment");
+    }
+
+    global $skipResult;
+
+    // Call when you are done with the API call and want to return a status code and/or data to the caller. Supports JSONP
+    // statusCode - HTTP status code to return
+    // logString - What string should appear in htapplogs/log.txt
+    // returnData - A string, array or object that you want to return to the caller
+    // shouldEncode - Indicates whether returnData should be JSON encoded or not
+    // wildcardOrigin - Allows the endpoint to be called from anywhere
+    function httpResult( $statusCode, $logString = "", $returnData = "", $shouldEncode = true, $wildcardOrigin = true )
+    {
+        global $log;
+        global $startTime;
+        global $skipResult;
+
+//        $log->logInfo(print_r($_SERVER, TRUE));
+
+        if( $skipResult == 'true' ){ return; }
+
+        if( !$wildcardOrigin && !empty($_SERVER['HTTP_REFERER']) )
+        {
+            $parsedURL = parse_url($_SERVER['HTTP_REFERER']);
+            $origin = $parsedURL['scheme'] . "://" . $parsedURL['host'];
+
+//            $log->logInfo($parsedURL['scheme'] . "://" . $parsedURL['host']);
+
+            header("Access-Control-Allow-Origin: " . $origin);
+            header("Access-Control-Allow-Credentials: true");
+        }
+        else{ header("Access-Control-Allow-Origin: *"); }
+
+//        $uri = explode('/', $_SERVER['REQUEST_URI']);
+//        $command = rawurldecode($uri[3] . "/" . $uri[4]);
+        
+        $command = $_SERVER['SCRIPT_NAME'];
+        
+        $executionTime = round(microtime(true) - $startTime, 5);
+        
+        switch( $statusCode )
+        {
+            case 200: { header("HTTP/1.0 200 OK");                      $log->logInfo("$executionTime HTTP/1.0 200 OK - $command - $logString");                    } break;
+            case 400: {	header("HTTP/1.0 400 Bad Request");            $log->logError("$executionTime HTTP/1.0 400 Bad Request - $command - $logString");           } break;
+            case 401: {	header("HTTP/1.0 401 Unauthorized");           $log->logError("$executionTime HTTP/1.0 401 Unauthorized - $command - $logString");          } break;
+            case 403: {	header("HTTP/1.0 403 Forbidden");              $log->logError("$executionTime HTTP/1.0 403 Forbidden - $command - $logString");             } break;
+            case 404: {	header("HTTP/1.0 404 Not Found");             $log->logNotice("$executionTime HTTP/1.0 404 Not Found - $command - $logString");             } break;
+            case 500: {	header("HTTP/1.0 500 Internal Server Error");  $log->logError("$executionTime HTTP/1.0 500 Internal Server Error - $command - $logString"); } break;
+        }
+        
+        if( ($statusCode == 200) ||
+            ($statusCode == 400) ||
+            ($statusCode == 401) ||
+            ($statusCode == 403) ||
+            ($statusCode == 404) )
+        {
+            if( $returnData !== "" )
+            {
+                header("Content-type: application/json");
+
+
+                if( $shouldEncode == true ){ $returnData = json_encode($returnData); }
+            }
+            else
+            {
+                //echo json_encode($logString);
+            }
+
+            $callback = getArgument('callback');
+            
+            if( !empty($callback) ){ echo $callback . '(' . $returnData . ')'; }
+                               else{ echo $returnData; }
+        }
+        else if( $statusCode == 500 )
+        {
+            echo json_encode("Oops. Something went wrong.");
+//            echo $logString . "\n";
+//            var_dump(debug_backtrace());
+        }
+    }
+
+    function getArgument( $name )
+    {
+             if( !empty($_GET[$name])  ){ return $_GET[$name];  }
+        else if( !empty($_POST[$name]) ){ return $_POST[$name]; }
+        
+        return "";
+    }
+
+    function getArgumentZero( $name )
+    {
+             if( isset($_GET[$name])  ){ return $_GET[$name];  }
+        else if( isset($_POST[$name]) ){ return $_POST[$name]; }
+        
+        return "";
+    }
+    
+    // Can't use getArgument because POST needs rawurldecode and GET doesn't?
+    function getArgumentFilter( $name )
+    {
+//        if( !empty($_GET[$name])  ){ $theValue = $_GET[$name]; }
+//        if( !empty($_POST[$name]) ){ $theValue = rawurldecode($_POST[$name]); }
+        if( isset($_GET[$name])  ){ return $_GET[$name]; }
+        if( isset($_POST[$name]) ){ return rawurldecode($_POST[$name]); }
+
+        return "";
+    }
+
+    function oauthAuthenticateCore( $failMode )
+    {
+        global $log;
+        global $mysqli;
+
+        global $dbhost;
+        global $dbname;
+        global $dbuser;
+        global $dbpassword;
+
+        global $masterDomain;
+
+        try
+        {
+            $oauth = new OAuth2(new OAuth2StoragePDO(new PDO('mysql:dbname=' . $dbname . ';host=' . $dbhost, $dbuser, $dbpassword)));
+            $token = $oauth->getBearerToken();
+            $access_token = $oauth->verifyAccessToken($token);
+
+//            $log->logInfo(print_r($access_token, true));
+
+            $mysqli = mysqliConnect();
+
+            if( $accountResult = $mysqli->query( "SELECT * FROM people WHERE ID='" . $access_token['user_id'] . "'" ) )
+            {
+                if( $account = $accountResult->fetch_assoc() )
+                {
+//                    $log->logInfo(print_r($account, true));
+
+                    return $account;
+                }
+                else if( $failMode ){ httpResult(403, "No user $email" ); }
+            }
+            else{ httpResult(500, "Could not retrieve the currentCookie for $email : " . $mysqli->error ); }
+            
+            return FALSE;
+        }
+        catch( OAuth2ServerException $oauthError )
+        {
+//            $log->logInfo(print_r($oauthError, true));
+
+            $err = $oauthError->errorData['error'];
+            
+            if( ($err == 'invalid_grant'  ) || 
+                ($err == 'invalid_request') )
+            {
+                if( $failMode ){ httpResult(401, "Oauth2 authentication failed: " . print_r($oauthError->errorData, TRUE), $masterDomain . ' Authentication failed' ); }
+            }
+            else
+            {
+                if( $failMode ){ httpResult(401, "Oauth2 authentication failed", $masterDomain . ' Authentication failed' ); }
+                $log->logError("Oauth2 authentication failed oauthError: " . print_r($oauthError, true));
+            }
+
+            return FALSE;
+        }
+    }
+
+    function sessionAuthenticate( $authLevel = 0 ) // Minimum required level required to authenticate. For exmaple: $authLevels['Editor'] See server/defines/authLevels.php
+    {        
+        global $mysqli;
+        global $authLevels;
+        global $log;
+
+        global $masterDomain;
+
+        $account = oauthAuthenticateCore( true );
+
+        if( $account != FALSE )
+        {
+            if( $account['auth'] < $authLevel )
+            {
+                httpResult(401, "(3) Authorization level not high enough for user $email on db $whichDB (". $account['auth'] ." < $authLevel)", $masterDomain . ' Authentication failed' );
+                return FALSE;
+            }
+        }
+
+        return $account;
+    }
+
+    function sessionAuthenticateOptional( $restrictDB = -1 )
+    {
+        global $mysqli;
+        global $log;
+
+        global $mysqli;
+
+        $account = FALSE;
+
+        if( $accountI = oauthAuthenticateCore( false ) )
+        {
+            $account = $accountI;
+        }
+        else
+        {
+            $mysqli = mysqliConnect();
+        }
+
+        return $account;
+    }
+
+    function dbConnect( $restrictDB = -1 )
+    {
+        global $mysqli;
+        
+        $mysqli = mysqliConnect();
+        findWhichDatabase( $restrictDB );
+
+        return $mysqli;
+    }
+
+    function failedTransaction()
+    {
+        global $mysqli;
+        global $log;
+
+        $mysqli->rollback();
+
+        $log->logError( print_r(debug_backtrace(), TRUE) );
+
+        sessionClose();
+        exit;
+    }
+
+    function getOauth2AccessToken( $ID, $client )
+    {
+        global $dbname;
+        global $dbhost;
+        global $dbuser;
+        global $dbpassword;
+        global $log;
+
+        global $masterDomain;
+
+        $params = array();
+        $params['redirect_uri']  = 'http://htapp.ldseo.com/oauth2/htappEnd.html';
+        $params['response_type'] = 'token';
+        $params['scope']         = '';
+
+        if( $masterDomain == "ultralink.me" )
+        {
+            switch( $client )
+            {
+                case   'iOS App' :
+                case 'Web Login' : { $params['client_id'] = sha1($client); } break;
+            }
+        }
+        else
+        {
+            $params['client_id'] = sha1($client . $masterDomain);
+        }
+
+        $oauth = new OAuth2(new OAuth2StoragePDO(new PDO('mysql:dbname=' . $dbname . ';host=' . $dbhost, $dbuser, $dbpassword)));
+        list($redirect_uri, $result) = $oauth->getAuthResult(TRUE, $ID, $params );
+
+//        $log->logInfo(print_r( $result, TRUE ));
+
+        return $result['fragment'];
+    }
+
+    function sendEmailPHP( $recipiantEmail, $subject, $htmlBody = '', $textBody = '', $from = '' )
+    {
+        global $log;
+
+        global $supportEmail;
+        global $masterDomain;
+
+        $messageBody = "";
+        $headers = "";
+
+        if( !empty($from) && ($from != '') )
+        {
+            $headers .= "From: " . $from . "\r\n" . "Reply-To: " . $from . "\r\n";
+        }
+        else
+        {
+            $headers .= "From: " . $masterDomain . " <" . $supportEmail . ">" . "\r\n" . "Reply-To: " . $supportEmail . "\r\n";
+        }
+        
+        $headers .= 'X-Mailer: PHP/' . phpversion() . "\r\n";
+
+             if( !empty($htmlBody) && ($htmlBody != '') ){ $messageBody = $htmlBody; $headers .= "Content-type: text/html; charset=iso-8859-1" . "\r\n"; }
+        else if( !empty($textBody) && ($textBody != '') ){ $messageBody = $textBody; }
+
+        mail($recipiantEmail, $subject, wordwrap($messageBody), $headers, "-f root@" . $masterDomain);
+    }
+
+    function sendEmailMailgun( $recipiantEmail, $subject, $htmlBody = '', $textBody = '', $from = '' )
+    {
+        global $log;
+        global $mailgunKey;
+
+        global $masterDomain;
+        global $supportEmail;
+        global $emailDomain;
+
+        $mg = new Mailgun($mailgunKey);
+
+        $messageArray = array( 'to' => $recipiantEmail, 'subject' => $subject );
+
+        if( !empty($from) && ($from != '') )
+        {
+            $messageArray['from'] = $from;
+        }
+        else
+        {
+            $messageArray['from'] =  $masterDomain . " <"  . $supportEmail . ">";
+        }
+
+        if( !empty($htmlBody) && ($htmlBody != '') ){ $messageArray['html'] = $htmlBody; }
+        if( !empty($textBody) && ($textBody != '') ){ $messageArray['text'] = $textBody; }
+                                            
+        $result = $mg->sendMessage( $emailDomain, $messageArray );
+    }
+    
+    function sendEmail( $recipiantEmail, $subject, $htmlBody = '', $textBody = '', $from = '' )
+    {
+        if( !empty($mailgunKey) )
+        {
+            sendEmailMailgun( $recipiantEmail, $subject, $htmlBody, $textBody, $from );
+        }
+        else
+        {
+            sendEmailPHP( $recipiantEmail, $subject, $htmlBody, $textBody, $from );
+        }
+    }
+
+?>

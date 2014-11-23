@@ -1,0 +1,24 @@
+<?php
+
+    require 'apiHeader';
+
+    $visiteeID = getArgument("visiteeID");
+    $time      = getArgument("time");
+
+    if( !empty($visiteeID) && !empty($time) )
+    {
+        if( $account = sessionAuthenticate() )
+        {
+            if( $mysqli->query("INSERT INTO visits (visitor_ID, visitee_ID, time) VALUES('" . $mysqli->real_escape_string($account['ID']) . "', '" . $mysqli->real_escape_string($visiteeID) . "', FROM_UNIXTIME('" . $mysqli->real_escape_string($time) . "'))") )
+            {
+                httpResult(200, "Recorded visit (visiteeID: $visiteeID, time: $time)");
+            }
+            else{ httpResult(500, "Could not record visit (visiteeID: $visiteeID, time: $time) : " . $mysqli->error); }
+
+            sessionClose();
+        }
+    }
+    else{ httpResult(400, "Missing argument (visiteeID: $visiteeID, time: $time)"); }
+
+    exit;
+?>

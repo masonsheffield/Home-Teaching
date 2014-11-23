@@ -1,0 +1,30 @@
+#!/bin/bash
+
+PROJECT=Home-Teaching
+DIR=/home/htappadmin/htapp.ldseo.com
+CHECKOUTDIR=/home/htappadmin/$PROJECT
+
+OLDHASH=`ls -1 $DIR | grep -v .htaccess | grep -v $PROJECT`
+
+cd $CHECKOUTDIR
+
+git pull
+
+HASH=`git rev-parse HEAD`
+
+if [ "$OLDHASH" != "$HASH" ]; then
+
+git checkout-index -a -f --prefix=$DIR/$HASH/
+
+ln -s $DIR/$HASH $DIR/staging
+mv -Tf $DIR/staging $DIR/$PROJECT
+
+if [ -n "$OLDHASH" ]; then
+    rm -rf $DIR/$OLDHASH
+fi
+
+cd $DIR/$PROJECT
+
+$DIR/$PROJECT/server/postUpdateScript
+
+fi
