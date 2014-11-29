@@ -1,0 +1,21 @@
+<?php
+
+    require 'apiHeader';
+
+    if( $account = sessionAuthenticate() )
+    {
+        if( $districtResult = $mysqli->query("SELECT D.ID AS districtID, D.name AS districtName, P.name AS districtLeaderName FROM district_people AS D_P INNER JOIN districts AS D ON D.ID=D_P.district_ID INNER JOIN people AS P ON P.ID=D.districtLeader_ID WHERE D_P.person_ID='" . $mysqli->real_escape_string($account['ID']) . "'") )
+        {
+            if( $district = $districtResult->fetch_assoc() )
+            {
+                httpResult(200, "Looked up district " . $account['ID'], $district);
+            }
+            else{ httpResult(404, "No district for " . $account['ID']); }
+        }
+        else{ httpResult(500, "Unable to look up district: " . $mysqli->error); }
+
+        sessionClose();
+    }
+
+    exit;
+?>
